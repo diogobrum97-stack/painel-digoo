@@ -58,23 +58,35 @@ def get_bling_token():
 def _buscar_custo_por_sku(sku, token):
     headers = {"Authorization": f"Bearer {token}"}
 
+    # Busca direto como variação (tipo V)
     resp = requests.get(
         "https://www.bling.com.br/Api/v3/produtos",
         headers=headers,
-        params={"codigo": sku}
+        params={"codigo": sku, "tipo": "V"}
     )
-    if resp.status_code != 200:
-        return 0
+    if resp.status_code == 200:
+        data = resp.json().get('data', [])
+        if data:
+            produto = data[0]
+            custo_medio = produto.get('custoMedio')
+            preco_custo = produto.get('precoCusto')
+            print(f"  DEBUG V {sku}: custoMedio={custo_medio} precoCusto={preco_custo} tipo={produto.get('tipo')}")
+            if custo_medio is not None:
+                try:
+                    val = float(str(custo_medio).replace(',', '.'))
+                    if val != 0:
+                        return val
+                except:
+                    pass
+            if preco_custo is not None:
+                try:
+                    val = float(str(preco_custo).replace(',', '.'))
+                    if val != 0:
+                        return val
+                except:
+                    pass
 
-    data = resp.json().get('data', [])
-    if not data:
-        return 0
-
-    produto = data[0]
-    # Printa todos os campos relevantes para debug
-    print(f"  DEBUG {sku}: {produto}")
-
-    return 0  # retorna 0 por enquanto só para ver o JSON
+    return 0
 
 
 def buscar_cmv_bling(skus: list) -> dict:
@@ -85,8 +97,7 @@ def buscar_cmv_bling(skus: list) -> dict:
         return {}
 
     cmv_map = {}
-    # Busca só os 3 primeiros para não lotar o log
-    for sku in skus[:3]:
+    for sku in skus:
         if not sku:
             continue
         try:
