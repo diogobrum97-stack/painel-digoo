@@ -63,15 +63,21 @@ def _buscar_custo_por_sku(sku, token):
         headers=headers,
         params={"codigo": sku}
     )
+
     if resp.status_code != 200:
+        print(f"  ERR {sku}: status {resp.status_code}")
         return 0
 
     data = resp.json().get('data', [])
     if not data:
+        print(f"  NF {sku}: não encontrado")
         return 0
 
     produto = data[0]
     preco_custo = produto.get('precoCusto')
+    custo_medio = produto.get('custoMedio')
+    tipo = produto.get('tipo')
+    print(f"  {sku}: tipo={tipo} precoCusto={preco_custo} custoMedio={custo_medio}")
 
     if preco_custo is not None:
         try:
