@@ -56,35 +56,36 @@ def get_bling_token():
 
 
 def _buscar_custo_por_sku(sku, token):
-    resp = requests.get(
-        "https://www.bling.com.br/Api/v3/produtos",
-        headers={"Authorization": f"Bearer {token}"},
-        params={"codigo": sku}
-    )
-    if resp.status_code != 200:
-        return 0
+    # Tenta primeiro buscar como variação (tipo V)
+    for tipo in ['V', None]:
+        params = {"codigo": sku}
+        if tipo:
+            params["tipo"] = tipo
 
-    data = resp.json().get('data', [])
-    if not data:
-        return 0
+        resp = requests.get(
+            "https://www.bling.com.br/Api/v3/produtos",
+            headers={"Authorization": f"Bearer {token}"},
+            params=params
+        )
+        if resp.status_code != 200:
+            continue
 
-    produto = data[0]
+        data = resp.json().get('data', [])
+        if not data:
+            continue
 
-    # Tenta custoMedio primeiro, depois precoCusto
-    custo_medio = produto.get('custoMedio')
-    preco_custo = produto.get('precoCusto')
+        produto = data[0]
+        custo_medio = produto.get('custoMedio')
+        preco_custo = produto.get('precoCusto')
 
-    if custo_medio is not None and custo_medio != 0:
-        custo = custo_medio
-    elif preco_custo is not None and preco_custo != 0:
-        custo = preco_custo
-    else:
-        return 0
+        if custo_medio is not None and custo_medio != 0:
+            return float(str(custo_medio).replace(',', '.'))
+        elif preco_custo is not None and preco_custo != 0:
+            return float(str(preco_custo).replace(',', '.'))
 
-    try:
-        return float(str(custo).replace(',', '.'))
-    except:
-        return 0
+        time.sleep(0.2)
+
+    return 0
 
 
 def buscar_cmv_bling(skus: list) -> dict:
