@@ -63,25 +63,18 @@ def _buscar_custo_por_sku(sku, token):
     resp = requests.get(
         "https://www.bling.com.br/Api/v3/produtos",
         headers={"Authorization": f"Bearer {token}"},
-        params={"codigo": sku, "tipo": "V"}
+        params={"codigo": sku}
     )
     if resp.status_code != 200:
         return 0
 
     data = resp.json().get('data', [])
     if not data:
-        resp2 = requests.get(
-            "https://www.bling.com.br/Api/v3/produtos",
-            headers={"Authorization": f"Bearer {token}"},
-            params={"codigo": sku}
-        )
-        data = resp2.json().get('data', []) if resp2.status_code == 200 else []
-
-    if not data:
         return 0
 
     produto = data[0]
-    custo   = produto.get('custoMedio') or produto.get('precoCusto') or 0
+    print(f"  DEBUG {sku}: custoMedio={produto.get('custoMedio')} precoCusto={produto.get('precoCusto')}")
+    custo = produto.get('custoMedio') or produto.get('precoCusto') or 0
     try:
         return float(str(custo).replace(',', '.'))
     except:
