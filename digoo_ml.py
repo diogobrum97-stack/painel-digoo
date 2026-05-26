@@ -113,7 +113,6 @@ def get_detalhes(ids, token):
         for entry in resp.json():
             if entry.get('code') == 200:
                 item = entry['body']
-                # Tenta seller_custom_field primeiro, depois attributes
                 if not item.get('seller_custom_field'):
                     for attr in item.get('attributes', []):
                         if attr.get('id') == 'SELLER_SKU':
@@ -138,32 +137,35 @@ def get_visitas(item_id, user_id, token):
         return 0
 
 # ============================================================
-# CMV — busca do Bling pelo SKU do ML, fallback na planilha
+# CMV — busca do Bling pelo SKU, suporta SKU em múltiplos anúncios
 # ============================================================
 def ler_cmv(service, itens=None):
-    cmv_map     = {}
-    sku_para_id = {}
+    # sku_para_ids: {sku: [id1, id2, ...]} — um SKU pode ter vários anúncios
+    sku_para_ids = {}
+    cmv_por_id   = {}
 
     if itens:
-        skus_validos = []
         for item in itens:
             sku = item.get('seller_custom_field') or ''
             if sku:
-                sku_para_id[sku] = item['id']
-                skus_validos.append(sku)
+                sku_para_ids.setdefault(sku, []).append(item['id'])
 
-        if skus_validos:
-            print(f"🔍 Buscando CMV no Bling para {len(skus_validos)} SKUs...")
-            bling_result = buscar_cmv_bling(skus_validos)
+        skus_unicos = list(sku_para_ids.keys())
+        if skus_unicos:
+            print(f"🔍 Buscando CMV no Bling para {len(skus_unicos)} SKUs únicos...")
+            bling_result = buscar_cmv_bling(skus_unicos)
+
+            # Mapeia o custo para TODOS os anúncios que têm aquele SKU
             for sku, custo in bling_result.items():
-                item_id = sku_para_id.get(sku)
-                if item_id:
-                    cmv_map[item_id] = custo
-            encontrados = sum(1 for v in cmv_map.values() if v > 0)
-            print(f"  ✔ {encontrados}/{len(skus_validos)} produtos com CMV no Bling")
+                for item_id in sku_para_ids.get(sku, []):
+                    cmv_por_id[item_id] = custo
+
+            encontrados = sum(1 for v in cmv_por_id.values() if v > 0)
+            print(f"  ✔ {encontrados}/{len(itens)} anúncios com CMV no Bling")
         else:
             print("⚠️  Nenhum anúncio tem SKU preenchido no ML")
 
+    # Fallback: aba CMV da planilha
     try:
         result = service.values().get(
             spreadsheetId=SHEET_ID, range='CMV!A2:C'
@@ -172,15 +174,15 @@ def ler_cmv(service, itens=None):
         for row in rows:
             if len(row) >= 3 and row[0]:
                 chave = row[0].strip()
-                if chave not in cmv_map or cmv_map[chave] == 0:
+                if chave not in cmv_por_id or cmv_por_id[chave] == 0:
                     try:
-                        cmv_map[chave] = float(str(row[2]).replace(',', '.'))
+                        cmv_por_id[chave] = float(str(row[2]).replace(',', '.'))
                     except:
-                        cmv_map[chave] = 0
+                        cmv_por_id[chave] = 0
     except:
         pass
 
-    return cmv_map
+    return cmv_por_id
 
 def garantir_abas(service):
     sheet_meta = service.get(spreadsheetId=SHEET_ID).execute()
