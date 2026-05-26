@@ -3,6 +3,10 @@ import time
 import requests
 import base64
 
+# ============================================================
+# BLING API — Autenticação e busca de CMV
+# ============================================================
+
 _bling_token  = None
 _bling_expiry = 0
 
@@ -49,22 +53,33 @@ def get_bling_token():
     data          = resp.json()
     _bling_token  = data['access_token']
     _bling_expiry = time.time() + data.get('expires_in', 21600) - 300
+
     os.environ['BLING_REFRESH_TOKEN'] = data['refresh_token']
     print("✅ Token Bling renovado!")
     return _bling_token
 
 
-def _buscar_produto(sku, token):
+def _buscar_custo_por_sku(sku, token):
     resp = requests.get(
         "https://www.bling.com.br/Api/v3/produtos",
         headers={"Authorization": f"Bearer {token}"},
-        params={"codigo": sku}
+        params={"codigo": sku, "tipo": "V"}
     )
     if resp.status_code != 200:
         return 0
+
     data = resp.json().get('data', [])
     if not data:
+        resp2 = requests.get(
+            "https://www.bling.com.br/Api/v3/produtos",
+            headers={"Authorization": f"Bearer {token}"},
+            params={"codigo": sku}
+        )
+        data = resp2.json().get('data', []) if resp2.status_code == 200 else []
+
+    if not data:
         return 0
+
     produto = data[0]
     custo   = produto.get('custoMedio') or produto.get('precoCusto') or 0
     try:
@@ -82,8 +97,10 @@ def buscar_cmv_bling(skus: list) -> dict:
 
     cmv_map = {}
     for sku in skus:
+        if not sku:
+            continue
         try:
-            cmv_map[sku] = _buscar_produto(sku, token)
+            cmv_map[sku] = _buscar_custo_por_sku(sku, token)
             time.sleep(0.3)
         except Exception as e:
             print(f"⚠️  Erro ao buscar SKU {sku}: {e}")
