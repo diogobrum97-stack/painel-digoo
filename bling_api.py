@@ -3,10 +3,6 @@ import time
 import requests
 import base64
 
-# ============================================================
-# BLING API — Autenticação e busca de CMV
-# ============================================================
-
 _bling_token  = None
 _bling_expiry = 0
 
@@ -73,8 +69,18 @@ def _buscar_custo_por_sku(sku, token):
         return 0
 
     produto = data[0]
-    print(f"  DEBUG {sku}: custoMedio={produto.get('custoMedio')} precoCusto={produto.get('precoCusto')}")
-    custo = produto.get('custoMedio') or produto.get('precoCusto') or 0
+
+    # Tenta custoMedio primeiro, depois precoCusto
+    custo_medio = produto.get('custoMedio')
+    preco_custo = produto.get('precoCusto')
+
+    if custo_medio is not None and custo_medio != 0:
+        custo = custo_medio
+    elif preco_custo is not None and preco_custo != 0:
+        custo = preco_custo
+    else:
+        return 0
+
     try:
         return float(str(custo).replace(',', '.'))
     except:
