@@ -24,7 +24,6 @@ COMISSAO = {
     'default':      0.14
 }
 
-# Token em memória (renovado automaticamente)
 _access_token = None
 _token_expiry = 0
 
@@ -43,7 +42,7 @@ def get_sheets_service():
     return build('sheets', 'v4', credentials=creds).spreadsheets()
 
 # ============================================================
-# TOKEN ML — usa refresh token direto da variável de ambiente
+# TOKEN ML
 # ============================================================
 def get_token():
     global _access_token, _token_expiry
@@ -105,7 +104,10 @@ def get_detalhes(ids, token):
         lote = ','.join(ids[i:i+20])
         resp = requests.get(
             'https://api.mercadolibre.com/items',
-            params={'ids': lote, 'attributes': 'id,title,price,listing_type_id,available_quantity,sold_quantity'},
+            params={
+                'ids': lote,
+                'attributes': 'id,title,price,listing_type_id,available_quantity,sold_quantity,seller_custom_field'
+            },
             headers={'Authorization': f'Bearer {token}'}
         )
         for entry in resp.json():
@@ -129,19 +131,32 @@ def get_visitas(item_id, user_id, token):
         return 0
 
 # ============================================================
-# CMV — busca do Bling primeiro, fallback na aba CMV da planilha
+# CMV — busca do Bling pelo SKU do ML, fallback na planilha
 # ============================================================
-def ler_cmv(service, ids_ml=None):
-    cmv_map = {}
+def ler_cmv(service, itens=None):
+    cmv_map     = {}
+    sku_para_id = {}
 
-    # 1. Tenta Bling
-    if ids_ml:
-        print("🔍 Buscando CMV no Bling...")
-        cmv_map = buscar_cmv_bling(ids_ml)
-        encontrados = sum(1 for v in cmv_map.values() if v > 0)
-        print(f"  ✔ {encontrados}/{len(ids_ml)} produtos com CMV no Bling")
+    if itens:
+        skus_validos = []
+        for item in itens:
+            sku = item.get('seller_custom_field') or ''
+            if sku:
+                sku_para_id[sku] = item['id']
+                skus_validos.append(sku)
 
-    # 2. Fallback: aba CMV da planilha para os que não vieram do Bling
+        if skus_validos:
+            print(f"🔍 Buscando CMV no Bling para {len(skus_validos)} SKUs...")
+            bling_result = buscar_cmv_bling(skus_validos)
+            for sku, custo in bling_result.items():
+                item_id = sku_para_id.get(sku)
+                if item_id:
+                    cmv_map[item_id] = custo
+            encontrados = sum(1 for v in cmv_map.values() if v > 0)
+            print(f"  ✔ {encontrados}/{len(skus_validos)} produtos com CMV no Bling")
+        else:
+            print("⚠️  Nenhum anúncio tem SKU preenchido no ML")
+
     try:
         result = service.values().get(
             spreadsheetId=SHEET_ID, range='CMV!A2:C'
@@ -149,12 +164,12 @@ def ler_cmv(service, ids_ml=None):
         rows = result.get('values', [])
         for row in rows:
             if len(row) >= 3 and row[0]:
-                sku = row[0].strip()
-                if sku not in cmv_map or cmv_map[sku] == 0:
+                chave = row[0].strip()
+                if chave not in cmv_map or cmv_map[chave] == 0:
                     try:
-                        cmv_map[sku] = float(str(row[2]).replace(',', '.'))
+                        cmv_map[chave] = float(str(row[2]).replace(',', '.'))
                     except:
-                        cmv_map[sku] = 0
+                        cmv_map[chave] = 0
     except:
         pass
 
@@ -173,10 +188,10 @@ def garantir_abas(service):
 # CÁLCULO
 # ============================================================
 def calcular(preco, cmv, listing_type, vendas, visitas):
-    comissao  = COMISSAO.get(listing_type, COMISSAO['default'])
-    frete     = preco * 0.04 if preco >= 79 else 15
-    custo_ml  = preco * comissao + frete
-    margem_rs = preco - cmv - custo_ml
+    comissao   = COMISSAO.get(listing_type, COMISSAO['default'])
+    frete      = preco * 0.04 if preco >= 79 else 15
+    custo_ml   = preco * comissao + frete
+    margem_rs  = preco - cmv - custo_ml
     margem_pct = margem_rs / preco if preco > 0 else 0
     conversao  = vendas / visitas if visitas > 0 else 0
 
@@ -208,14 +223,15 @@ def atualizar_planilha():
         itens   = get_detalhes(ids, token)
         service = get_sheets_service()
         garantir_abas(service)
-        cmv_map = ler_cmv(service, ids_ml=ids)   # ← agora busca do Bling
+        cmv_map = ler_cmv(service, itens=itens)
 
-        cab = [['ID', 'Título', 'Modalidade', 'Preço (R$)', 'CMV (R$)',
+        cab = [['ID', 'Título', 'SKU', 'Modalidade', 'Preço (R$)', 'CMV (R$)',
                 'Comissão ML', 'Custo ML (R$)', 'Margem (R$)', 'Margem (%)',
                 'Vendas 30d', 'Estoque', 'Visitas 30d', 'Conversão (%)',
                 'Recomendação', 'Atualizado em']]
         linhas = []
         for item in itens:
+            sku     = item.get('seller_custom_field') or ''
             cmv     = cmv_map.get(item['id'], 0)
             visitas = get_visitas(item['id'], user_id, token)
             c       = calcular(
@@ -225,7 +241,8 @@ def atualizar_planilha():
                 visitas
             )
             linhas.append([
-                item['id'], item['title'], item.get('listing_type_id', ''),
+                item['id'], item['title'], sku,
+                item.get('listing_type_id', ''),
                 item['price'], cmv,
                 f"{c['comissao']*100:.1f}%", round(c['custo_ml'], 2),
                 round(c['margem_rs'], 2), f"{c['margem_pct']*100:.1f}%",
@@ -237,7 +254,7 @@ def atualizar_planilha():
             print(f"  ✔ {item['title'][:50]}")
 
         service.values().clear(
-            spreadsheetId=SHEET_ID, range='Anúncios ML!A:O'
+            spreadsheetId=SHEET_ID, range='Anúncios ML!A:P'
         ).execute()
         service.values().update(
             spreadsheetId=SHEET_ID, range='Anúncios ML!A1',
