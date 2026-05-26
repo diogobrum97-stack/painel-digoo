@@ -6,6 +6,7 @@ import schedule
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 from googleapiclient.discovery import build
+from bling_api import buscar_cmv_bling
 
 # ============================================================
 # CONFIGURAÇÕES
@@ -47,7 +48,6 @@ def get_sheets_service():
 def get_token():
     global _access_token, _token_expiry
 
-    # Token ainda válido em memória
     if _access_token and time.time() < _token_expiry:
         return _access_token
 
@@ -66,10 +66,10 @@ def get_token():
     if resp.status_code != 200:
         raise Exception(f"Erro ao obter token: {resp.text}")
 
-    data = resp.json()
+    data          = resp.json()
     _access_token = data['access_token']
     _token_expiry = time.time() + data.get('expires_in', 21600) - 300
-    print("✅ Token obtido!")
+    print("✅ Token ML obtido!")
     return _access_token
 
 # ============================================================
@@ -89,7 +89,7 @@ def get_anuncios(user_id, token):
             headers={'Authorization': f'Bearer {token}'}
         )
         data = resp.json()
-        ids = data.get('results', [])
+        ids  = data.get('results', [])
         if not ids:
             break
         items.extend(ids)
@@ -116,10 +116,10 @@ def get_detalhes(ids, token):
 
 def get_visitas(item_id, user_id, token):
     try:
-        hoje = datetime.now()
+        hoje   = datetime.now()
         inicio = hoje - timedelta(days=30)
-        fmt = lambda d: d.strftime('%Y-%m-%d')
-        resp = requests.get(
+        fmt    = lambda d: d.strftime('%Y-%m-%d')
+        resp   = requests.get(
             f'https://api.mercadolibre.com/users/{user_id}/items_visits',
             params={'ids': item_id, 'date_from': fmt(inicio), 'date_to': fmt(hoje)},
             headers={'Authorization': f'Bearer {token}'}
@@ -129,24 +129,36 @@ def get_visitas(item_id, user_id, token):
         return 0
 
 # ============================================================
-# CMV
+# CMV — busca do Bling primeiro, fallback na aba CMV da planilha
 # ============================================================
-def ler_cmv(service):
+def ler_cmv(service, ids_ml=None):
+    cmv_map = {}
+
+    # 1. Tenta Bling
+    if ids_ml:
+        print("🔍 Buscando CMV no Bling...")
+        cmv_map = buscar_cmv_bling(ids_ml)
+        encontrados = sum(1 for v in cmv_map.values() if v > 0)
+        print(f"  ✔ {encontrados}/{len(ids_ml)} produtos com CMV no Bling")
+
+    # 2. Fallback: aba CMV da planilha para os que não vieram do Bling
     try:
         result = service.values().get(
             spreadsheetId=SHEET_ID, range='CMV!A2:C'
         ).execute()
         rows = result.get('values', [])
-        cmv_map = {}
         for row in rows:
             if len(row) >= 3 and row[0]:
-                try:
-                    cmv_map[row[0].strip()] = float(str(row[2]).replace(',', '.'))
-                except:
-                    cmv_map[row[0].strip()] = 0
-        return cmv_map
+                sku = row[0].strip()
+                if sku not in cmv_map or cmv_map[sku] == 0:
+                    try:
+                        cmv_map[sku] = float(str(row[2]).replace(',', '.'))
+                    except:
+                        cmv_map[sku] = 0
     except:
-        return {}
+        pass
+
+    return cmv_map
 
 def garantir_abas(service):
     sheet_meta = service.get(spreadsheetId=SHEET_ID).execute()
@@ -161,21 +173,27 @@ def garantir_abas(service):
 # CÁLCULO
 # ============================================================
 def calcular(preco, cmv, listing_type, vendas, visitas):
-    comissao = COMISSAO.get(listing_type, COMISSAO['default'])
-    frete = preco * 0.04 if preco >= 79 else 15
-    custo_ml = preco * comissao + frete
+    comissao  = COMISSAO.get(listing_type, COMISSAO['default'])
+    frete     = preco * 0.04 if preco >= 79 else 15
+    custo_ml  = preco * comissao + frete
     margem_rs = preco - cmv - custo_ml
     margem_pct = margem_rs / preco if preco > 0 else 0
-    conversao = vendas / visitas if visitas > 0 else 0
+    conversao  = vendas / visitas if visitas > 0 else 0
 
-    if cmv == 0:                                               rec = '⚠️ Cadastre o CMV'
-    elif margem_pct < MARGEM_MIN:                              rec = '🔴 Subir preço'
-    elif margem_pct >= MARGEM_MIN and conversao > 0.03:        rec = '🟢 Pode subir'
-    elif margem_pct > MARGEM_MIN + 0.10 and conversao < 0.01: rec = '🟡 Avaliar baixar'
-    else:                                                      rec = '✅ Manter'
+    if cmv == 0:                                                rec = '⚠️ Cadastre o CMV'
+    elif margem_pct < MARGEM_MIN:                               rec = '🔴 Subir preço'
+    elif margem_pct >= MARGEM_MIN and conversao > 0.03:         rec = '🟢 Pode subir'
+    elif margem_pct > MARGEM_MIN + 0.10 and conversao < 0.01:  rec = '🟡 Avaliar baixar'
+    else:                                                       rec = '✅ Manter'
 
-    return {'comissao': comissao, 'custo_ml': custo_ml, 'margem_rs': margem_rs,
-            'margem_pct': margem_pct, 'conversao': conversao, 'rec': rec}
+    return {
+        'comissao':   comissao,
+        'custo_ml':   custo_ml,
+        'margem_rs':  margem_rs,
+        'margem_pct': margem_pct,
+        'conversao':  conversao,
+        'rec':        rec
+    }
 
 # ============================================================
 # FUNÇÃO PRINCIPAL
@@ -183,36 +201,44 @@ def calcular(preco, cmv, listing_type, vendas, visitas):
 def atualizar_planilha():
     print(f"\n🔄 Atualizando — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
     try:
-        token = get_token()
+        token   = get_token()
         user_id = get_user_id(token)
-        ids = get_anuncios(user_id, token)
+        ids     = get_anuncios(user_id, token)
         print(f"📦 {len(ids)} anúncios encontrados")
-        itens = get_detalhes(ids, token)
+        itens   = get_detalhes(ids, token)
         service = get_sheets_service()
         garantir_abas(service)
-        cmv_map = ler_cmv(service)
+        cmv_map = ler_cmv(service, ids_ml=ids)   # ← agora busca do Bling
 
-        cab = [['ID','Título','Modalidade','Preço (R$)','CMV (R$)',
-                'Comissão ML','Custo ML (R$)','Margem (R$)','Margem (%)',
-                'Vendas 30d','Estoque','Visitas 30d','Conversão (%)','Recomendação','Atualizado em']]
+        cab = [['ID', 'Título', 'Modalidade', 'Preço (R$)', 'CMV (R$)',
+                'Comissão ML', 'Custo ML (R$)', 'Margem (R$)', 'Margem (%)',
+                'Vendas 30d', 'Estoque', 'Visitas 30d', 'Conversão (%)',
+                'Recomendação', 'Atualizado em']]
         linhas = []
         for item in itens:
-            cmv = cmv_map.get(item['id'], 0)
+            cmv     = cmv_map.get(item['id'], 0)
             visitas = get_visitas(item['id'], user_id, token)
-            c = calcular(item['price'], cmv, item.get('listing_type_id',''), item.get('sold_quantity',0), visitas)
-            linhas.append([
-                item['id'], item['title'], item.get('listing_type_id',''),
+            c       = calcular(
                 item['price'], cmv,
-                f"{c['comissao']*100:.1f}%", round(c['custo_ml'],2),
-                round(c['margem_rs'],2), f"{c['margem_pct']*100:.1f}%",
-                item.get('sold_quantity',0), item.get('available_quantity',0),
+                item.get('listing_type_id', ''),
+                item.get('sold_quantity', 0),
+                visitas
+            )
+            linhas.append([
+                item['id'], item['title'], item.get('listing_type_id', ''),
+                item['price'], cmv,
+                f"{c['comissao']*100:.1f}%", round(c['custo_ml'], 2),
+                round(c['margem_rs'], 2), f"{c['margem_pct']*100:.1f}%",
+                item.get('sold_quantity', 0), item.get('available_quantity', 0),
                 visitas, f"{c['conversao']*100:.2f}%", c['rec'],
                 datetime.now().strftime('%d/%m/%Y %H:%M')
             ])
             time.sleep(0.2)
             print(f"  ✔ {item['title'][:50]}")
 
-        service.values().clear(spreadsheetId=SHEET_ID, range='Anúncios ML!A:O').execute()
+        service.values().clear(
+            spreadsheetId=SHEET_ID, range='Anúncios ML!A:O'
+        ).execute()
         service.values().update(
             spreadsheetId=SHEET_ID, range='Anúncios ML!A1',
             valueInputOption='RAW', body={'values': cab + linhas}
