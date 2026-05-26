@@ -106,13 +106,20 @@ def get_detalhes(ids, token):
             'https://api.mercadolibre.com/items',
             params={
                 'ids': lote,
-                'attributes': 'id,title,price,listing_type_id,available_quantity,sold_quantity,seller_custom_field'
+                'attributes': 'id,title,price,listing_type_id,available_quantity,sold_quantity,seller_custom_field,attributes'
             },
             headers={'Authorization': f'Bearer {token}'}
         )
         for entry in resp.json():
             if entry.get('code') == 200:
-                detalhes.append(entry['body'])
+                item = entry['body']
+                # Tenta seller_custom_field primeiro, depois attributes
+                if not item.get('seller_custom_field'):
+                    for attr in item.get('attributes', []):
+                        if attr.get('id') == 'SELLER_SKU':
+                            item['seller_custom_field'] = attr.get('value_name', '')
+                            break
+                detalhes.append(item)
         time.sleep(0.3)
     return detalhes
 
