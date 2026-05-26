@@ -55,21 +55,32 @@ def get_bling_token():
     return _bling_token
 
 
-def _extrair_custo(produto):
-    """Extrai o melhor custo disponível de um objeto produto/variação."""
-    custo_medio = produto.get('custoMedio')
-    preco_custo = produto.get('precoCusto')
-    if custo_medio is not None and float(str(custo_medio).replace(',', '.') or 0) != 0:
-        return float(str(custo_medio).replace(',', '.'))
-    if preco_custo is not None and float(str(preco_custo).replace(',', '.') or 0) != 0:
-        return float(str(preco_custo).replace(',', '.'))
-    return 0
+def _buscar_custo_estrutura(produto_id, token):
+    """Busca o Preço Total de Custo pela estrutura do kit."""
+    resp = requests.get(
+        f"https://www.bling.com.br/Api/v3/produtos/{produto_id}/estrutura",
+        headers={"Authorization": f"Bearer {token}"}
+    )
+    if resp.status_code != 200:
+        return 0
+
+    estrutura = resp.json().get('data', {})
+    componentes = estrutura.get('componentes', [])
+    if not componentes:
+        return 0
+
+    total = sum(
+        float(str(c.get('precoCusto', 0)).replace(',', '.')) *
+        float(str(c.get('quantidade', 1)).replace(',', '.'))
+        for c in componentes
+    )
+    return round(total, 2)
 
 
 def _buscar_custo_por_sku(sku, token):
     headers = {"Authorization": f"Bearer {token}"}
 
-    # 1. Busca produto pelo código (funciona para produtos simples)
+    # 1. Busca produto pelo código
     resp = requests.get(
         "https://www.bling.com.br/Api/v3/produtos",
         headers=headers,
@@ -85,26 +96,22 @@ def _buscar_custo_por_sku(sku, token):
     produto = data[0]
     produto_id = produto.get('id')
 
-    # 2. Tenta custo direto do produto
-    custo = _extrair_custo(produto)
-    if custo != 0:
-        return custo
-
-    # 3. Se custo=0, busca nas variações do produto pai
+    # 2. Tenta custo pela estrutura do kit (mais preciso)
     if produto_id:
         time.sleep(0.2)
-        resp_var = requests.get(
-            f"https://www.bling.com.br/Api/v3/produtos/{produto_id}/variacoes",
-            headers=headers
-        )
-        if resp_var.status_code == 200:
-            variacoes = resp_var.json().get('data', [])
-            for var in variacoes:
-                # Verifica se o código da variação bate com o SKU buscado
-                if var.get('codigo') == sku:
-                    custo = _extrair_custo(var)
-                    if custo != 0:
-                        return custo
+        custo_estrutura = _buscar_custo_estrutura(produto_id, token)
+        if custo_estrutura != 0:
+            return custo_estrutura
+
+    # 3. Fallback: custoMedio
+    custo_medio = produto.get('custoMedio')
+    if custo_medio is not None:
+        try:
+            val = float(str(custo_medio).replace(',', '.'))
+            if val != 0:
+                return val
+        except:
+            pass
 
     return 0
 
