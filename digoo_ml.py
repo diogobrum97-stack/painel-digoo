@@ -98,6 +98,36 @@ def get_anuncios(user_id, token):
         time.sleep(0.3)
     return items
 
+def extrair_sku(item):
+    """Tenta extrair SKU de todas as fontes possíveis do anúncio ML."""
+    # 1. seller_custom_field (campo direto)
+    sku = item.get('seller_custom_field') or ''
+    if sku:
+        return sku
+
+    # 2. attributes SELLER_SKU (campo novo)
+    for attr in item.get('attributes', []):
+        if attr.get('id') == 'SELLER_SKU':
+            sku = attr.get('value_name') or ''
+            if sku:
+                return sku
+
+    # 3. variations — anúncios com variações têm o SKU na variação principal
+    for var in item.get('variations', []):
+        for attr in var.get('attribute_combinations', []):
+            pass  # não tem SKU aqui
+        # SKU da variação fica em seller_custom_field da variação
+        sku = var.get('seller_custom_field') or ''
+        if sku:
+            return sku
+        for attr in var.get('attributes', []):
+            if attr.get('id') == 'SELLER_SKU':
+                sku = attr.get('value_name') or ''
+                if sku:
+                    return sku
+
+    return ''
+
 def get_detalhes(ids, token):
     detalhes = []
     for i in range(0, len(ids), 20):
@@ -106,18 +136,15 @@ def get_detalhes(ids, token):
             'https://api.mercadolibre.com/items',
             params={
                 'ids': lote,
-                'attributes': 'id,title,price,listing_type_id,available_quantity,sold_quantity,seller_custom_field,attributes'
+                'attributes': 'id,title,price,listing_type_id,available_quantity,sold_quantity,seller_custom_field,attributes,variations'
             },
             headers={'Authorization': f'Bearer {token}'}
         )
         for entry in resp.json():
             if entry.get('code') == 200:
                 item = entry['body']
-                if not item.get('seller_custom_field'):
-                    for attr in item.get('attributes', []):
-                        if attr.get('id') == 'SELLER_SKU':
-                            item['seller_custom_field'] = attr.get('value_name', '')
-                            break
+                # Extrai SKU de todas as fontes
+                item['_sku'] = extrair_sku(item)
                 detalhes.append(item)
         time.sleep(0.3)
     return detalhes
@@ -137,16 +164,15 @@ def get_visitas(item_id, user_id, token):
         return 0
 
 # ============================================================
-# CMV — busca do Bling pelo SKU, suporta SKU em múltiplos anúncios
+# CMV — busca do Bling pelo SKU, suporta múltiplos anúncios por SKU
 # ============================================================
 def ler_cmv(service, itens=None):
-    # sku_para_ids: {sku: [id1, id2, ...]} — um SKU pode ter vários anúncios
     sku_para_ids = {}
     cmv_por_id   = {}
 
     if itens:
         for item in itens:
-            sku = item.get('seller_custom_field') or ''
+            sku = item.get('_sku') or ''
             if sku:
                 sku_para_ids.setdefault(sku, []).append(item['id'])
 
@@ -155,7 +181,6 @@ def ler_cmv(service, itens=None):
             print(f"🔍 Buscando CMV no Bling para {len(skus_unicos)} SKUs únicos...")
             bling_result = buscar_cmv_bling(skus_unicos)
 
-            # Mapeia o custo para TODOS os anúncios que têm aquele SKU
             for sku, custo in bling_result.items():
                 for item_id in sku_para_ids.get(sku, []):
                     cmv_por_id[item_id] = custo
@@ -240,7 +265,7 @@ def atualizar_planilha():
                 'Recomendação', 'Atualizado em']]
         linhas = []
         for item in itens:
-            sku     = item.get('seller_custom_field') or ''
+            sku     = item.get('_sku') or ''
             cmv     = cmv_map.get(item['id'], 0)
             visitas = get_visitas(item['id'], user_id, token)
             c       = calcular(
