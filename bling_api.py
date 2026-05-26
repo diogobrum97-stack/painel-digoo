@@ -55,32 +55,9 @@ def get_bling_token():
     return _bling_token
 
 
-def _buscar_custo_estrutura(produto_id, token):
-    """Busca o Preço Total de Custo pela estrutura do kit."""
-    resp = requests.get(
-        f"https://www.bling.com.br/Api/v3/produtos/{produto_id}/estrutura",
-        headers={"Authorization": f"Bearer {token}"}
-    )
-    if resp.status_code != 200:
-        return 0
-
-    estrutura = resp.json().get('data', {})
-    componentes = estrutura.get('componentes', [])
-    if not componentes:
-        return 0
-
-    total = sum(
-        float(str(c.get('precoCusto', 0)).replace(',', '.')) *
-        float(str(c.get('quantidade', 1)).replace(',', '.'))
-        for c in componentes
-    )
-    return round(total, 2)
-
-
 def _buscar_custo_por_sku(sku, token):
     headers = {"Authorization": f"Bearer {token}"}
 
-    # 1. Busca produto pelo código
     resp = requests.get(
         "https://www.bling.com.br/Api/v3/produtos",
         headers=headers,
@@ -94,26 +71,10 @@ def _buscar_custo_por_sku(sku, token):
         return 0
 
     produto = data[0]
-    produto_id = produto.get('id')
+    # Printa todos os campos relevantes para debug
+    print(f"  DEBUG {sku}: {produto}")
 
-    # 2. Tenta custo pela estrutura do kit (mais preciso)
-    if produto_id:
-        time.sleep(0.2)
-        custo_estrutura = _buscar_custo_estrutura(produto_id, token)
-        if custo_estrutura != 0:
-            return custo_estrutura
-
-    # 3. Fallback: custoMedio
-    custo_medio = produto.get('custoMedio')
-    if custo_medio is not None:
-        try:
-            val = float(str(custo_medio).replace(',', '.'))
-            if val != 0:
-                return val
-        except:
-            pass
-
-    return 0
+    return 0  # retorna 0 por enquanto só para ver o JSON
 
 
 def buscar_cmv_bling(skus: list) -> dict:
@@ -124,7 +85,8 @@ def buscar_cmv_bling(skus: list) -> dict:
         return {}
 
     cmv_map = {}
-    for sku in skus:
+    # Busca só os 3 primeiros para não lotar o log
+    for sku in skus[:3]:
         if not sku:
             continue
         try:
