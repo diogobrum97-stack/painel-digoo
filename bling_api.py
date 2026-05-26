@@ -55,35 +55,56 @@ def get_bling_token():
     return _bling_token
 
 
+def _extrair_custo(produto):
+    """Extrai o melhor custo disponível de um objeto produto/variação."""
+    custo_medio = produto.get('custoMedio')
+    preco_custo = produto.get('precoCusto')
+    if custo_medio is not None and float(str(custo_medio).replace(',', '.') or 0) != 0:
+        return float(str(custo_medio).replace(',', '.'))
+    if preco_custo is not None and float(str(preco_custo).replace(',', '.') or 0) != 0:
+        return float(str(preco_custo).replace(',', '.'))
+    return 0
+
+
 def _buscar_custo_por_sku(sku, token):
-    # Tenta primeiro buscar como variação (tipo V)
-    for tipo in ['V', None]:
-        params = {"codigo": sku}
-        if tipo:
-            params["tipo"] = tipo
+    headers = {"Authorization": f"Bearer {token}"}
 
-        resp = requests.get(
-            "https://www.bling.com.br/Api/v3/produtos",
-            headers={"Authorization": f"Bearer {token}"},
-            params=params
-        )
-        if resp.status_code != 200:
-            continue
+    # 1. Busca produto pelo código (funciona para produtos simples)
+    resp = requests.get(
+        "https://www.bling.com.br/Api/v3/produtos",
+        headers=headers,
+        params={"codigo": sku}
+    )
+    if resp.status_code != 200:
+        return 0
 
-        data = resp.json().get('data', [])
-        if not data:
-            continue
+    data = resp.json().get('data', [])
+    if not data:
+        return 0
 
-        produto = data[0]
-        custo_medio = produto.get('custoMedio')
-        preco_custo = produto.get('precoCusto')
+    produto = data[0]
+    produto_id = produto.get('id')
 
-        if custo_medio is not None and custo_medio != 0:
-            return float(str(custo_medio).replace(',', '.'))
-        elif preco_custo is not None and preco_custo != 0:
-            return float(str(preco_custo).replace(',', '.'))
+    # 2. Tenta custo direto do produto
+    custo = _extrair_custo(produto)
+    if custo != 0:
+        return custo
 
+    # 3. Se custo=0, busca nas variações do produto pai
+    if produto_id:
         time.sleep(0.2)
+        resp_var = requests.get(
+            f"https://www.bling.com.br/Api/v3/produtos/{produto_id}/variacoes",
+            headers=headers
+        )
+        if resp_var.status_code == 200:
+            variacoes = resp_var.json().get('data', [])
+            for var in variacoes:
+                # Verifica se o código da variação bate com o SKU buscado
+                if var.get('codigo') == sku:
+                    custo = _extrair_custo(var)
+                    if custo != 0:
+                        return custo
 
     return 0
 
