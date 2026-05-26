@@ -58,33 +58,50 @@ def get_bling_token():
 def _buscar_custo_por_sku(sku, token):
     headers = {"Authorization": f"Bearer {token}"}
 
-    # Busca direto como variação (tipo V)
+    # 1. Busca produto pai pelo código
     resp = requests.get(
         "https://www.bling.com.br/Api/v3/produtos",
         headers=headers,
-        params={"codigo": sku, "tipo": "V"}
+        params={"codigo": sku}
     )
-    if resp.status_code == 200:
-        data = resp.json().get('data', [])
-        if data:
-            produto = data[0]
-            custo_medio = produto.get('custoMedio')
-            preco_custo = produto.get('precoCusto')
-            print(f"  DEBUG V {sku}: custoMedio={custo_medio} precoCusto={preco_custo} tipo={produto.get('tipo')}")
-            if custo_medio is not None:
-                try:
-                    val = float(str(custo_medio).replace(',', '.'))
-                    if val != 0:
-                        return val
-                except:
-                    pass
-            if preco_custo is not None:
-                try:
-                    val = float(str(preco_custo).replace(',', '.'))
-                    if val != 0:
-                        return val
-                except:
-                    pass
+    if resp.status_code != 200:
+        return 0
+
+    data = resp.json().get('data', [])
+    if not data:
+        return 0
+
+    produto = data[0]
+    produto_id = produto.get('id')
+
+    # 2. Busca variações do produto pai
+    if produto_id:
+        time.sleep(0.2)
+        resp_var = requests.get(
+            f"https://www.bling.com.br/Api/v3/produtos/{produto_id}/variacoes",
+            headers=headers
+        )
+        if resp_var.status_code == 200:
+            variacoes = resp_var.json().get('data', [])
+            for var in variacoes:
+                if var.get('codigo') == sku:
+                    custo_medio = var.get('custoMedio')
+                    preco_custo = var.get('precoCusto')
+                    print(f"  DEBUG VAR {sku}: custoMedio={custo_medio} precoCusto={preco_custo} campos={list(var.keys())}")
+                    if custo_medio is not None:
+                        try:
+                            val = float(str(custo_medio).replace(',', '.'))
+                            if val != 0:
+                                return val
+                        except:
+                            pass
+                    if preco_custo is not None:
+                        try:
+                            val = float(str(preco_custo).replace(',', '.'))
+                            if val != 0:
+                                return val
+                        except:
+                            pass
 
     return 0
 
